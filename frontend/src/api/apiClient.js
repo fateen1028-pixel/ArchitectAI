@@ -71,4 +71,16 @@ export const api = {
             `/api/challenges/${encodeURIComponent(challengeSlug)}`,
         );
     },
+
+    submitAttempt(challengeSlug, attempt) {
+        return request(
+            `/api/challenges/${
+                encodeURIComponent(challengeSlug)
+            }/attempts`,
+            {
+                method: "POST",
+                body: JSON.stringify(attempt),
+            },
+        );
+    },
 };

@@ -1,6 +1,7 @@
 import {
     ArrowLeft,
     BrainCircuit,
+    LoaderCircle,
     RotateCcw,
     Save,
 } from "lucide-react";
@@ -47,9 +48,11 @@ function loadDraft(challengeSlug) {
             nodes: Array.isArray(parsedDraft.nodes)
                 ? parsedDraft.nodes
                 : [],
+
             edges: Array.isArray(parsedDraft.edges)
                 ? parsedDraft.edges
                 : [],
+
             explanation:
                 typeof parsedDraft.explanation === "string"
                     ? parsedDraft.explanation
@@ -104,13 +107,31 @@ export default function DesignWorkspacePage() {
 
     const [challenge, setChallenge] =
         useState(null);
+
     const [status, setStatus] =
         useState("loading");
+
     const [error, setError] =
         useState("");
+
     const [explanation, setExplanation] =
         useState("");
 
+    const [isSubmitting, setIsSubmitting] =
+        useState(false);
+
+    const [submissionError, setSubmissionError] =
+        useState("");
+
+    const [submissionResult, setSubmissionResult] =
+        useState(null);
+
+    /*
+     * These must be declared before submitAttempt.
+     *
+     * submitAttempt uses nodes and edges in both
+     * the function body and dependency array.
+     */
     const [
         nodes,
         setNodes,
@@ -122,6 +143,62 @@ export default function DesignWorkspacePage() {
         setEdges,
         onEdgesChange,
     ] = useEdgesState([]);
+
+    const submitAttempt = useCallback(async () => {
+        if (isSubmitting) {
+            return;
+        }
+
+        setSubmissionError("");
+        setSubmissionResult(null);
+        setIsSubmitting(true);
+
+        try {
+            const payload = {
+                explanation: explanation.trim(),
+
+                /*
+                 * React Flow stores extra frontend-specific data.
+                 *
+                 * We send only the fields expected by Spring Boot.
+                 */
+                nodes: nodes.map((node) => ({
+                    id: node.id,
+                    componentType:
+                    node.data.componentType,
+                    label: node.data.label,
+                    x: node.position.x,
+                    y: node.position.y,
+                })),
+
+                edges: edges.map((edge) => ({
+                    id: edge.id,
+                    source: edge.source,
+                    target: edge.target,
+                })),
+            };
+
+            const result = await api.submitAttempt(
+                challengeSlug,
+                payload,
+            );
+
+            setSubmissionResult(result);
+        } catch (requestError) {
+            setSubmissionError(
+                requestError.message
+                ?? "Unable to submit architecture",
+            );
+        } finally {
+            setIsSubmitting(false);
+        }
+    }, [
+        challengeSlug,
+        edges,
+        explanation,
+        isSubmitting,
+        nodes,
+    ]);
 
     const loadWorkspace =
         useCallback(async () => {
@@ -146,7 +223,11 @@ export default function DesignWorkspacePage() {
 
                 setStatus("success");
             } catch (requestError) {
-                setError(requestError.message);
+                setError(
+                    requestError.message
+                    ?? "Unable to load workspace",
+                );
+
                 setStatus("error");
             }
         }, [
@@ -159,6 +240,12 @@ export default function DesignWorkspacePage() {
         loadWorkspace();
     }, [loadWorkspace]);
 
+    /*
+     * Automatically persist the current draft.
+     *
+     * The small delay prevents localStorage from being
+     * updated on every tiny drag movement immediately.
+     */
     useEffect(() => {
         if (status !== "success") {
             return undefined;
@@ -189,6 +276,22 @@ export default function DesignWorkspacePage() {
         status,
     ]);
 
+    /*
+     * Once the learner edits the architecture after
+     * submission, hide the previous submission result.
+     *
+     * The previous result no longer represents the
+     * currently visible architecture.
+     */
+    useEffect(() => {
+        setSubmissionResult(null);
+        setSubmissionError("");
+    }, [
+        nodes,
+        edges,
+        explanation,
+    ]);
+
     const addComponent = useCallback(
         (componentType) => {
             const component =
@@ -205,11 +308,14 @@ export default function DesignWorkspacePage() {
                         id:
                             `${componentType.toLowerCase()}-`
                             + crypto.randomUUID(),
+
                         type: "architecture",
+
                         position: {
                             x: 80 + column * 250,
                             y: 80 + row * 150,
                         },
+
                         data: {
                             componentType,
                             label: component.label,
@@ -234,6 +340,8 @@ export default function DesignWorkspacePage() {
         setNodes([]);
         setEdges([]);
         setExplanation("");
+        setSubmissionResult(null);
+        setSubmissionError("");
 
         localStorage.removeItem(
             `architect-ai:draft:${challengeSlug}`,
@@ -243,6 +351,18 @@ export default function DesignWorkspacePage() {
         setEdges,
         setNodes,
     ]);
+
+    /*
+     * Frontend validation.
+     *
+     * The backend still performs the real validation.
+     * Frontend validation only improves user experience.
+     */
+    const canSubmit =
+        nodes.length >= 3
+        && edges.length >= 2
+        && explanation.trim().length >= 40
+        && !isSubmitting;
 
     if (status === "loading") {
         return (
@@ -423,29 +543,169 @@ export default function DesignWorkspacePage() {
             gap-4 sm:flex-row sm:items-center
           "
                 >
-                    <p className="text-xs text-zinc-600">
-                        {nodes.length} components ·{" "}
-                        {edges.length} connections ·{" "}
-                        {explanation.trim().length} characters
-                    </p>
+                    <div>
+                        <p className="text-xs text-zinc-600">
+                            {nodes.length} components ·{" "}
+                            {edges.length} connections ·{" "}
+                            {explanation.trim().length} characters
+                        </p>
+
+                        {!canSubmit && !isSubmitting && (
+                            <p
+                                className="
+                  mt-1 text-xs text-zinc-700
+                "
+                            >
+                                Add at least 3 components,
+                                2 connections and a 40-character
+                                explanation.
+                            </p>
+                        )}
+                    </div>
 
                     <button
                         type="button"
-                        disabled
-                        title="AI evaluation is the next checkpoint"
+                        onClick={submitAttempt}
+                        disabled={!canSubmit}
                         className="
-              inline-flex cursor-not-allowed
-              items-center justify-center gap-2
-              rounded-xl bg-white/10
+              inline-flex items-center justify-center
+              gap-2 rounded-xl bg-white
               px-5 py-3 text-sm font-semibold
-              text-zinc-500
+              text-black transition
+              hover:bg-zinc-200
+              disabled:cursor-not-allowed
+              disabled:bg-white/10
+              disabled:text-zinc-600
             "
                     >
-                        <BrainCircuit size={16} />
-                        Submit for AI review
+                        {isSubmitting ? (
+                            <>
+                                <LoaderCircle
+                                    size={16}
+                                    className="animate-spin"
+                                />
+
+                                Saving attempt...
+                            </>
+                        ) : (
+                            <>
+                                <BrainCircuit size={16} />
+                                Submit architecture
+                            </>
+                        )}
                     </button>
                 </div>
             </section>
+
+            {submissionError && (
+                <div
+                    className="
+            mt-4 rounded-xl
+            border border-red-400/15
+            bg-red-400/[0.05]
+            px-4 py-3 text-sm text-red-300
+          "
+                >
+                    {submissionError}
+                </div>
+            )}
+
+            {submissionResult && (
+                <div
+                    className="
+            mt-4 rounded-xl
+            border border-emerald-400/15
+            bg-emerald-400/[0.05]
+            px-5 py-4
+          "
+                >
+                    <h3
+                        className="
+              font-semibold text-emerald-300
+            "
+                    >
+                        Architecture saved successfully
+                    </h3>
+
+                    <p
+                        className="
+              mt-2 text-sm leading-6
+              text-zinc-400
+            "
+                    >
+                        {submissionResult.checks.componentCount}
+                        {" "}components and{" "}
+                        {submissionResult.checks.connectionCount}
+                        {" "}connections were stored.
+                    </p>
+
+                    <p
+                        className="
+              mt-2 text-xs text-zinc-500
+            "
+                    >
+                        Attempt status:{" "}
+                        {submissionResult.status}
+                    </p>
+
+                    {submissionResult.checks
+                        .disconnectedComponents.length > 0 && (
+                        <div className="mt-4">
+                            <p
+                                className="
+                  text-sm font-medium
+                  text-amber-300
+                "
+                            >
+                                Disconnected components
+                            </p>
+
+                            <ul
+                                className="
+                  mt-2 list-disc space-y-1
+                  pl-5 text-sm text-zinc-400
+                "
+                            >
+                                {submissionResult.checks
+                                    .disconnectedComponents
+                                    .map((component) => (
+                                        <li key={component}>
+                                            {component}
+                                        </li>
+                                    ))}
+                            </ul>
+                        </div>
+                    )}
+
+                    {submissionResult.checks
+                        .warnings.length > 0 && (
+                        <div className="mt-4">
+                            <p
+                                className="
+                  text-sm font-medium
+                  text-amber-300
+                "
+                            >
+                                Warnings
+                            </p>
+
+                            <ul
+                                className="
+                  mt-2 list-disc space-y-1
+                  pl-5 text-sm text-zinc-400
+                "
+                            >
+                                {submissionResult.checks
+                                    .warnings.map((warning) => (
+                                        <li key={warning}>
+                                            {warning}
+                                        </li>
+                                    ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            )}
 
             <div
                 className="
